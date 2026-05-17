@@ -1,0 +1,46 @@
+name: Shorts Clipper
+
+on:
+  schedule:
+    - cron: '0 9 * * 1'   # Every Monday at 9am UTC
+  workflow_dispatch:        # Also lets you trigger it manually from GitHub
+    inputs:
+      channel:
+        description: 'YouTube channel (e.g. @freecodecamp)'
+        required: true
+        default: '@freecodecamp'
+
+jobs:
+  clip:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120    # 4hr video downloads can take a while
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install ffmpeg
+        run: sudo apt-get install -y ffmpeg
+
+      - name: Install Python dependencies
+        run: pip install yt-dlp google-generativeai
+
+      - name: Run Shorts Clipper
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: |
+          # Use manual input channel if triggered manually, else use default
+          CHANNEL="${{ github.event.inputs.channel || '@freecodecamp' }}"
+          python shorts_clipper.py "$CHANNEL"
+
+      - name: Upload shorts as artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: shorts-${{ github.run_number }}
+          path: shorts_output/
+          retention-days: 7    # GitHub keeps them for 7 days, then auto-deletes
