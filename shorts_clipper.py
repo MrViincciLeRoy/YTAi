@@ -12,7 +12,7 @@ import sys
 from pathlib import Path
 
 # ── CONFIG ────────────────────────────────────────────────────────────────────
-GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")  # Set as GitHub secret or local env var
+GEMINI_API_KEY = "YOUR_GEMINI_API_KEY_HERE"   # Get free at aistudio.google.com
 OUTPUT_DIR     = Path("shorts_output")
 VIDEOS_DIR     = Path("downloaded_videos")
 MAX_VIDEOS     = 3    # How many viral videos to pull per channel
@@ -330,8 +330,8 @@ def cut_clips(video_path: Path, clips: list[dict], video_title: str):
 def run(channel_input: str):
     setup()
 
-    if not GEMINI_API_KEY:
-        print("\n❌  GEMINI_API_KEY not set. Locally: export GEMINI_API_KEY=your_key | GitHub: Settings → Secrets → GEMINI_API_KEY")
+    if GEMINI_API_KEY == "YOUR_GEMINI_API_KEY_HERE":
+        print("\n❌  Set your GEMINI_API_KEY at the top of this file.")
         print("    Get a free key at: https://aistudio.google.com/app/apikey\n")
         sys.exit(1)
 
