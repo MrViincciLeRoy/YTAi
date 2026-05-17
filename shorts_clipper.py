@@ -12,7 +12,7 @@ import sys
 from pathlib import Path
 
 # ── CONFIG ────────────────────────────────────────────────────────────────────
-GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")   # Get free at aistudio.google.com
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")  # Set as GitHub secret or local env var
 OUTPUT_DIR     = Path("shorts_output")
 VIDEOS_DIR     = Path("downloaded_videos")
 MAX_VIDEOS     = 3    # How many viral videos to pull per channel
@@ -29,7 +29,7 @@ def log(msg, emoji="▶"):
     print(f"\n{emoji}  {msg}")
 
 def get_viral_videos(channel_input: str) -> list[dict]:
-    """Use yt-dlp to fetch the most viewed videos from a channel."""
+    """Fetch most viewed long-form videos from a channel."""
     log(f"Scanning channel: {channel_input}", "🔍")
 
     # Accept channel URL or @handle or bare name
@@ -40,46 +40,53 @@ def get_viral_videos(channel_input: str) -> list[dict]:
     else:
         url = f"https://www.youtube.com/@{channel_input}/videos"
 
+    # Single call: dump full JSON for the playlist (no flat-playlist)
+    # This gives real view_count and duration for every video
+    log("Fetching video metadata (this takes ~1 min for 15 videos)...", "📋")
     cmd = [
         "yt-dlp",
-        "--flat-playlist",
-        "--playlist-end", "30",          # look at last 30 uploads
-        "--print", "%(id)s|||%(title)s|||%(view_count)s|||%(duration)s",
+        "--dump-json",
+        "--playlist-end", "15",
         "--no-warnings",
+        "--ignore-errors",       # skip unavailable videos silently
         url
     ]
-
     result = subprocess.run(cmd, capture_output=True, text=True)
+
+    # Debug: show what came back
+    lines = [l for l in result.stdout.strip().split("\n") if l.strip()]
+    print(f"  yt-dlp returned {len(lines)} JSON lines")
     if result.returncode != 0:
-        print(f"Error fetching channel: {result.stderr[:300]}")
+        print(f"  stderr: {result.stderr[:400]}")
+    if not lines:
+        print("  stdout was empty — channel may be blocked or handle is wrong")
         sys.exit(1)
 
     videos = []
-    for line in result.stdout.strip().split("\n"):
-        if "|||" not in line:
-            continue
-        parts = line.split("|||")
-        if len(parts) < 4:
-            continue
-        vid_id, title, views, duration = parts[0], parts[1], parts[2], parts[3]
+    for line in lines:
         try:
-            view_count = int(views) if views and views != "NA" else 0
-            dur_sec    = int(duration) if duration and duration != "NA" else 0
-        except ValueError:
-            continue
+            info       = json.loads(line)
+            vid_id     = info.get("id", "")
+            title      = info.get("title", "Untitled")
+            view_count = int(info.get("view_count") or 0)
+            dur_sec    = int(info.get("duration") or 0)
 
-        # Only videos longer than 8 minutes (worth clipping)
-        if dur_sec > 480:
-            videos.append({
-                "id":       vid_id,
-                "title":    title,
-                "views":    view_count,
-                "duration": dur_sec,
-                "url":      f"https://www.youtube.com/watch?v={vid_id}"
-            })
+            print(f"  Parsed: {title[:50]} | views={view_count} | dur={dur_sec}s")
+
+            if dur_sec > 480:   # longer than 8 minutes
+                videos.append({
+                    "id":       vid_id,
+                    "title":    title,
+                    "views":    view_count,
+                    "duration": dur_sec,
+                    "url":      f"https://www.youtube.com/watch?v={vid_id}"
+                })
+        except (json.JSONDecodeError, ValueError) as e:
+            print(f"  Skipping line (parse error): {e}")
+            continue
 
     if not videos:
-        print("No long-form videos found on this channel.")
+        print("No long-form videos (>8 min) found. Check channel handle and try again.")
         sys.exit(1)
 
     # Sort by view count, pick top N
@@ -330,8 +337,8 @@ def cut_clips(video_path: Path, clips: list[dict], video_title: str):
 def run(channel_input: str):
     setup()
 
-    if GEMINI_API_KEY == "YOUR_GEMINI_API_KEY_HERE":
-        print("\n❌  Set your GEMINI_API_KEY at the top of this file.")
+    if not GEMINI_API_KEY:
+        print("\n❌  GEMINI_API_KEY not set. Locally: export GEMINI_API_KEY=your_key | GitHub: Settings → Secrets → GEMINI_API_KEY")
         print("    Get a free key at: https://aistudio.google.com/app/apikey\n")
         sys.exit(1)
 
