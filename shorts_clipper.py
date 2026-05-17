@@ -12,7 +12,7 @@ import sys
 from pathlib import Path
 
 # ── CONFIG ────────────────────────────────────────────────────────────────────
-GEMINI_API_KEY = "YOUR_GEMINI_API_KEY_HERE"   # Get free at aistudio.google.com
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")   # Get free at aistudio.google.com
 OUTPUT_DIR     = Path("shorts_output")
 VIDEOS_DIR     = Path("downloaded_videos")
 MAX_VIDEOS     = 3    # How many viral videos to pull per channel
