@@ -31,8 +31,14 @@ jobs:
         run: pip install yt-dlp google-generativeai
 
       - name: Restore YouTube cookies
+        env:
+          YOUTUBE_COOKIES_B64: ${{ secrets.YOUTUBE_COOKIES_B64 }}
         run: |
-          echo "${{ secrets.YOUTUBE_COOKIES_B64 }}" | base64 -d > cookies.txt
+          printf '%s' "$YOUTUBE_COOKIES_B64" | base64 -d > cookies.txt
+          echo "--- cookies.txt first line ---"
+          head -1 cookies.txt
+          echo "--- cookies.txt line count ---"
+          wc -l cookies.txt
 
       - name: Run Shorts Clipper
         env:
