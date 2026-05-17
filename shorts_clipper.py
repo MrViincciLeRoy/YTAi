@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Shorts Clipper - Automated YouTube Shorts Generator
-Pipeline: Channel → Viral Videos (YouTube Data API) → Download → AI Clip Detection → ffmpeg Cut
+Pipeline: Channel → Viral Videos (YouTube Data API) → Download (iOS client) → AI Clip Detection → ffmpeg Cut
 """
 
 import os
@@ -11,7 +11,6 @@ import subprocess
 import sys
 import time
 from pathlib import Path
-
 import urllib.request
 import urllib.parse
 
@@ -42,7 +41,6 @@ def yt_api(endpoint: str, params: dict) -> dict:
         return json.loads(r.read())
 
 def iso8601_to_seconds(duration: str) -> int:
-    """PT1H2M3S → seconds"""
     m = re.match(r'PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?', duration)
     if not m:
         return 0
@@ -50,7 +48,6 @@ def iso8601_to_seconds(duration: str) -> int:
     return h * 3600 + mn * 60 + s
 
 def get_channel_id(handle: str) -> str:
-    """Resolve @handle or channel name to channel ID."""
     handle = handle.lstrip("@")
     data = yt_api("search", {
         "part": "snippet",
@@ -65,10 +62,8 @@ def get_channel_id(handle: str) -> str:
     return items[0]["snippet"]["channelId"]
 
 def get_viral_videos(channel_input: str) -> list[dict]:
-    """Fetch most viewed long-form videos via YouTube Data API v3."""
     log(f"Scanning channel: {channel_input}", "🔍")
 
-    # Resolve channel ID
     if channel_input.startswith("UC") and len(channel_input) == 24:
         channel_id = channel_input
     else:
@@ -76,14 +71,12 @@ def get_viral_videos(channel_input: str) -> list[dict]:
 
     log(f"Channel ID: {channel_id}", "📋")
 
-    # Get uploads playlist ID
     data = yt_api("channels", {
         "part": "contentDetails",
         "id": channel_id
     })
     uploads_playlist = data["items"][0]["contentDetails"]["relatedPlaylists"]["uploads"]
 
-    # Fetch recent videos from uploads playlist
     playlist_data = yt_api("playlistItems", {
         "part": "contentDetails",
         "playlistId": uploads_playlist,
@@ -92,10 +85,9 @@ def get_viral_videos(channel_input: str) -> list[dict]:
     video_ids = [item["contentDetails"]["videoId"] for item in playlist_data.get("items", [])]
 
     if not video_ids:
-        print("No videos found in uploads playlist.")
+        print("No videos found.")
         sys.exit(1)
 
-    # Batch fetch video details (duration + view count)
     details = yt_api("videos", {
         "part": "snippet,statistics,contentDetails",
         "id": ",".join(video_ids)
@@ -110,7 +102,7 @@ def get_viral_videos(channel_input: str) -> list[dict]:
 
         print(f"  {title[:50]} | views={view_count:,} | dur={dur_sec}s")
 
-        if dur_sec > 480:  # longer than 8 minutes
+        if dur_sec > 480:
             videos.append({
                 "id":       vid_id,
                 "title":    title,
@@ -134,7 +126,6 @@ def get_viral_videos(channel_input: str) -> list[dict]:
 
 
 def download_video_and_transcript(video: dict) -> tuple[Path | None, str | None]:
-    """Download video + transcript via yt-dlp (no cookies needed, direct video URL)."""
     vid_id    = video["id"]
     safe_name = re.sub(r'[^\w\-]', '_', video["title"])[:50]
     base_path = VIDEOS_DIR / f"{vid_id}_{safe_name}"
@@ -146,6 +137,8 @@ def download_video_and_transcript(video: dict) -> tuple[Path | None, str | None]
         for attempt in range(1, RETRY_ATTEMPTS + 1):
             cmd = [
                 "yt-dlp",
+                # Use iOS client — no PO token required, bypasses bot detection
+                "--extractor-args", "youtube:player-client=ios",
                 "-f", "bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
                 "--merge-output-format", "mp4",
                 "-o", str(video_path),
@@ -158,10 +151,10 @@ def download_video_and_transcript(video: dict) -> tuple[Path | None, str | None]
                 break
             if attempt < RETRY_ATTEMPTS:
                 wait = RETRY_DELAY * (2 ** (attempt - 1))
-                print(f"  ⏳ Retrying download in {wait}s...")
+                print(f"  ⏳ Retrying download in {wait}s... stderr: {result.stderr[:100]}")
                 time.sleep(wait)
             else:
-                print(f"  Download failed: {result.stderr[:200]}")
+                print(f"  Download failed: {result.stderr[:300]}")
                 return None, None
     else:
         print("  Already downloaded, skipping.")
@@ -172,6 +165,7 @@ def download_video_and_transcript(video: dict) -> tuple[Path | None, str | None]
         for attempt in range(1, RETRY_ATTEMPTS + 1):
             cmd = [
                 "yt-dlp",
+                "--extractor-args", "youtube:player-client=ios",
                 "--write-auto-subs",
                 "--sub-format", "vtt",
                 "--sub-lang", "en",
@@ -359,7 +353,6 @@ def run(channel_input: str):
         sys.exit(1)
     if not YOUTUBE_API_KEY:
         print("❌  YOUTUBE_API_KEY not set.")
-        print("    Get a free key at: https://console.cloud.google.com → Enable YouTube Data API v3")
         sys.exit(1)
 
     print("\n" + "="*55)
