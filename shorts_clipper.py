@@ -9,9 +9,10 @@ import re
 import json
 import subprocess
 import sys
+import time
 from pathlib import Path
 
-# ── CONFIG ────────────────────────────────────────────────────────────────────
+# ── CONFIG ─────────────────────────────────────────────────────────────────
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")  # Set as GitHub secret or local env var
 OUTPUT_DIR     = Path("shorts_output")
 VIDEOS_DIR     = Path("downloaded_videos")
@@ -19,7 +20,9 @@ MAX_VIDEOS     = 3    # How many viral videos to pull per channel
 MAX_CLIPS      = 5    # How many shorts to cut per video
 SHORT_MIN_SEC  = 45   # Minimum short length in seconds
 SHORT_MAX_SEC  = 170  # Maximum short length in seconds (under 3 min)
-# ─────────────────────────────────────────────────────────────────────────────
+RETRY_ATTEMPTS = 3    # Number of retries for YouTube requests
+RETRY_DELAY    = 5    # Initial delay in seconds before retry (exponential backoff)
+# ──────────────────────────────────────────────────────────────────────────
 
 def setup():
     OUTPUT_DIR.mkdir(exist_ok=True)
@@ -43,24 +46,51 @@ def get_viral_videos(channel_input: str) -> list[dict]:
     # Single call: dump full JSON for the playlist (no flat-playlist)
     # This gives real view_count and duration for every video
     log("Fetching video metadata (this takes ~1 min for 15 videos)...", "📋")
-    cmd = [
-        "yt-dlp",
-        "--dump-json",
-        "--playlist-end", "15",
-        "--no-warnings",
-        "--ignore-errors",       # skip unavailable videos silently
-        url
-    ]
-    result = subprocess.run(cmd, capture_output=True, text=True)
-
-    # Debug: show what came back
-    lines = [l for l in result.stdout.strip().split("\n") if l.strip()]
-    print(f"  yt-dlp returned {len(lines)} JSON lines")
-    if result.returncode != 0:
-        print(f"  stderr: {result.stderr[:400]}")
-    if not lines:
-        print("  stdout was empty — channel may be blocked or handle is wrong")
-        sys.exit(1)
+    
+    # Retry logic with exponential backoff
+    for attempt in range(1, RETRY_ATTEMPTS + 1):
+        cmd = [
+            "yt-dlp",
+            "--dump-json",
+            "--playlist-end", "15",
+            "--no-warnings",
+            "--ignore-errors",       # skip unavailable videos silently
+            "--socket-timeout", "30",
+            "-U", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            url
+        ]
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        
+        # Debug: show what came back
+        lines = [l for l in result.stdout.strip().split("\n") if l.strip()]
+        print(f"  yt-dlp returned {len(lines)} JSON lines")
+        
+        if result.returncode == 0 and lines:
+            break
+        
+        # Check if it's a bot detection error
+        if "Sign in to confirm you're not a bot" in result.stderr or "429" in result.stderr:
+            if attempt < RETRY_ATTEMPTS:
+                wait_time = RETRY_DELAY * (2 ** (attempt - 1))  # Exponential backoff: 5s, 10s, 20s
+                print(f"  ⏳ YouTube bot detection triggered. Waiting {wait_time}s before retry (attempt {attempt}/{RETRY_ATTEMPTS})...")
+                time.sleep(wait_time)
+                continue
+        
+        # Other errors or empty results
+        if attempt < RETRY_ATTEMPTS:
+            wait_time = RETRY_DELAY * (2 ** (attempt - 1))
+            print(f"  ⏳ Retrying in {wait_time}s (attempt {attempt}/{RETRY_ATTEMPTS})...")
+            if result.returncode != 0:
+                print(f"     stderr: {result.stderr[:200]}")
+            time.sleep(wait_time)
+        else:
+            print(f"  stderr: {result.stderr[:400]}")
+            print("  stdout was empty — channel may be blocked or handle is wrong")
+            print("\n💡 Tips to fix this:")
+            print("  1. Wait a few minutes and try again (YouTube rate limiting)")
+            print("  2. Use a VPN or residential proxy")
+            print("  3. Check if the channel handle is correct")
+            sys.exit(1)
 
     videos = []
     for line in lines:
@@ -113,36 +143,59 @@ def download_video_and_transcript(video: dict) -> tuple[Path | None, str | None]
     # Download video (best quality under 1080p to save space)
     video_path = base_path.with_suffix(".mp4")
     if not video_path.exists():
-        cmd = [
-            "yt-dlp",
-            "-f", "bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
-            "--merge-output-format", "mp4",
-            "-o", str(video_path),
-            "--no-warnings",
-            video["url"]
-        ]
-        result = subprocess.run(cmd, capture_output=True, text=True)
-        if result.returncode != 0:
-            print(f"  Video download failed: {result.stderr[:200]}")
-            return None, None
+        # Retry logic for video download
+        for attempt in range(1, RETRY_ATTEMPTS + 1):
+            cmd = [
+                "yt-dlp",
+                "-f", "bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
+                "--merge-output-format", "mp4",
+                "-o", str(video_path),
+                "--no-warnings",
+                "--socket-timeout", "30",
+                "-U", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+                video["url"]
+            ]
+            result = subprocess.run(cmd, capture_output=True, text=True)
+            if result.returncode == 0:
+                break
+            
+            if attempt < RETRY_ATTEMPTS:
+                wait_time = RETRY_DELAY * (2 ** (attempt - 1))
+                print(f"  ⏳ Download failed, retrying in {wait_time}s...")
+                time.sleep(wait_time)
+            else:
+                print(f"  Video download failed: {result.stderr[:200]}")
+                return None, None
     else:
         print(f"  Video already downloaded, skipping.")
 
-    # Download transcript (auto-generated subtitles)
+    # Download transcript (auto-generated subtitles) with retry
     transcript_path = base_path.with_suffix(".txt")
     if not transcript_path.exists():
         log("Fetching transcript...", "📝")
-        cmd = [
-            "yt-dlp",
-            "--write-auto-subs",
-            "--sub-format", "vtt",
-            "--sub-lang", "en",
-            "--skip-download",
-            "--no-warnings",
-            "-o", str(base_path),
-            video["url"]
-        ]
-        subprocess.run(cmd, capture_output=True, text=True)
+        
+        for attempt in range(1, RETRY_ATTEMPTS + 1):
+            cmd = [
+                "yt-dlp",
+                "--write-auto-subs",
+                "--sub-format", "vtt",
+                "--sub-lang", "en",
+                "--skip-download",
+                "--no-warnings",
+                "--socket-timeout", "30",
+                "-U", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+                "-o", str(base_path),
+                video["url"]
+            ]
+            
+            result = subprocess.run(cmd, capture_output=True, text=True)
+            if result.returncode == 0:
+                break
+            
+            if attempt < RETRY_ATTEMPTS:
+                wait_time = RETRY_DELAY * (2 ** (attempt - 1))
+                print(f"  ⏳ Transcript fetch failed, retrying in {wait_time}s...")
+                time.sleep(wait_time)
 
         # Convert .vtt to plain text
         vtt_files = list(VIDEOS_DIR.glob(f"{vid_id}*.vtt"))
@@ -380,7 +433,7 @@ def run(channel_input: str):
     print("="*55 + "\n")
 
 
-# ── ENTRY POINT ───────────────────────────────────────────────────────────────
+# ── ENTRY POINT ──────────────────────────────────────────────────────────
 if __name__ == "__main__":
     if len(sys.argv) < 2:
         print("\nUsage:")
