@@ -30,19 +30,10 @@ jobs:
       - name: Install Python dependencies
         run: pip install yt-dlp google-generativeai
 
-      - name: Restore YouTube cookies
-        env:
-          YOUTUBE_COOKIES_B64: ${{ secrets.YOUTUBE_COOKIES_B64 }}
-        run: |
-          printf '%s' "$YOUTUBE_COOKIES_B64" | base64 -d > cookies.txt
-          echo "--- cookies.txt first line ---"
-          head -1 cookies.txt
-          echo "--- cookies.txt line count ---"
-          wc -l cookies.txt
-
       - name: Run Shorts Clipper
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          YOUTUBE_API_KEY: ${{ secrets.YOUTUBE_API_KEY }}
         run: |
           CHANNEL="${{ github.event.inputs.channel || '@freecodecamp' }}"
           python shorts_clipper.py "$CHANNEL"
