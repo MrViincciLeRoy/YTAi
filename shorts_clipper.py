@@ -13,15 +13,17 @@ import time
 from pathlib import Path
 
 # ── CONFIG ─────────────────────────────────────────────────────────────────
-GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")  # Set as GitHub secret or local env var
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
+COOKIES_FILE   = "cookies.txt"
 OUTPUT_DIR     = Path("shorts_output")
 VIDEOS_DIR     = Path("downloaded_videos")
-MAX_VIDEOS     = 3    # How many viral videos to pull per channel
-MAX_CLIPS      = 5    # How many shorts to cut per video
-SHORT_MIN_SEC  = 45   # Minimum short length in seconds
-SHORT_MAX_SEC  = 170  # Maximum short length in seconds (under 3 min)
-RETRY_ATTEMPTS = 3    # Number of retries for YouTube requests
-RETRY_DELAY    = 5    # Initial delay in seconds before retry (exponential backoff)
+MAX_VIDEOS     = 3
+MAX_CLIPS      = 5
+SHORT_MIN_SEC  = 45
+SHORT_MAX_SEC  = 170
+RETRY_ATTEMPTS = 3
+RETRY_DELAY    = 5
+USER_AGENT     = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
 # ──────────────────────────────────────────────────────────────────────────
 
 def setup():
@@ -31,11 +33,16 @@ def setup():
 def log(msg, emoji="▶"):
     print(f"\n{emoji}  {msg}")
 
+def cookies_args():
+    """Return cookies flag if cookies.txt exists."""
+    if Path(COOKIES_FILE).exists():
+        return ["--cookies", COOKIES_FILE]
+    return []
+
 def get_viral_videos(channel_input: str) -> list[dict]:
     """Fetch most viewed long-form videos from a channel."""
     log(f"Scanning channel: {channel_input}", "🔍")
 
-    # Accept channel URL or @handle or bare name
     if channel_input.startswith("http"):
         url = channel_input
     elif channel_input.startswith("@"):
@@ -43,40 +50,28 @@ def get_viral_videos(channel_input: str) -> list[dict]:
     else:
         url = f"https://www.youtube.com/@{channel_input}/videos"
 
-    # Single call: dump full JSON for the playlist (no flat-playlist)
-    # This gives real view_count and duration for every video
     log("Fetching video metadata (this takes ~1 min for 15 videos)...", "📋")
-    
-    # Retry logic with exponential backoff
+
     for attempt in range(1, RETRY_ATTEMPTS + 1):
         cmd = [
             "yt-dlp",
             "--dump-json",
             "--playlist-end", "15",
             "--no-warnings",
-            "--ignore-errors",       # skip unavailable videos silently
+            "--ignore-errors",
             "--socket-timeout", "30",
-            "-U", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            "--user-agent", USER_AGENT,
+            *cookies_args(),
             url
         ]
         result = subprocess.run(cmd, capture_output=True, text=True)
-        
-        # Debug: show what came back
+
         lines = [l for l in result.stdout.strip().split("\n") if l.strip()]
         print(f"  yt-dlp returned {len(lines)} JSON lines")
-        
+
         if result.returncode == 0 and lines:
             break
-        
-        # Check if it's a bot detection error
-        if "Sign in to confirm you're not a bot" in result.stderr or "429" in result.stderr:
-            if attempt < RETRY_ATTEMPTS:
-                wait_time = RETRY_DELAY * (2 ** (attempt - 1))  # Exponential backoff: 5s, 10s, 20s
-                print(f"  ⏳ YouTube bot detection triggered. Waiting {wait_time}s before retry (attempt {attempt}/{RETRY_ATTEMPTS})...")
-                time.sleep(wait_time)
-                continue
-        
-        # Other errors or empty results
+
         if attempt < RETRY_ATTEMPTS:
             wait_time = RETRY_DELAY * (2 ** (attempt - 1))
             print(f"  ⏳ Retrying in {wait_time}s (attempt {attempt}/{RETRY_ATTEMPTS})...")
@@ -85,11 +80,10 @@ def get_viral_videos(channel_input: str) -> list[dict]:
             time.sleep(wait_time)
         else:
             print(f"  stderr: {result.stderr[:400]}")
-            print("  stdout was empty — channel may be blocked or handle is wrong")
+            print("  stdout was empty — channel may be blocked or cookies are missing/expired")
             print("\n💡 Tips to fix this:")
-            print("  1. Wait a few minutes and try again (YouTube rate limiting)")
-            print("  2. Use a VPN or residential proxy")
-            print("  3. Check if the channel handle is correct")
+            print("  1. Re-export cookies.txt from browser and re-encode as YOUTUBE_COOKIES_B64 secret")
+            print("  2. Check if the channel handle is correct")
             sys.exit(1)
 
     videos = []
@@ -103,7 +97,7 @@ def get_viral_videos(channel_input: str) -> list[dict]:
 
             print(f"  Parsed: {title[:50]} | views={view_count} | dur={dur_sec}s")
 
-            if dur_sec > 480:   # longer than 8 minutes
+            if dur_sec > 480:
                 videos.append({
                     "id":       vid_id,
                     "title":    title,
@@ -119,7 +113,6 @@ def get_viral_videos(channel_input: str) -> list[dict]:
         print("No long-form videos (>8 min) found. Check channel handle and try again.")
         sys.exit(1)
 
-    # Sort by view count, pick top N
     videos.sort(key=lambda v: v["views"], reverse=True)
     top = videos[:MAX_VIDEOS]
 
@@ -140,10 +133,8 @@ def download_video_and_transcript(video: dict) -> tuple[Path | None, str | None]
 
     log(f"Downloading: {video['title'][:60]}", "⬇️")
 
-    # Download video (best quality under 1080p to save space)
     video_path = base_path.with_suffix(".mp4")
     if not video_path.exists():
-        # Retry logic for video download
         for attempt in range(1, RETRY_ATTEMPTS + 1):
             cmd = [
                 "yt-dlp",
@@ -152,13 +143,14 @@ def download_video_and_transcript(video: dict) -> tuple[Path | None, str | None]
                 "-o", str(video_path),
                 "--no-warnings",
                 "--socket-timeout", "30",
-                "-U", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+                "--user-agent", USER_AGENT,
+                *cookies_args(),
                 video["url"]
             ]
             result = subprocess.run(cmd, capture_output=True, text=True)
             if result.returncode == 0:
                 break
-            
+
             if attempt < RETRY_ATTEMPTS:
                 wait_time = RETRY_DELAY * (2 ** (attempt - 1))
                 print(f"  ⏳ Download failed, retrying in {wait_time}s...")
@@ -169,11 +161,10 @@ def download_video_and_transcript(video: dict) -> tuple[Path | None, str | None]
     else:
         print(f"  Video already downloaded, skipping.")
 
-    # Download transcript (auto-generated subtitles) with retry
     transcript_path = base_path.with_suffix(".txt")
     if not transcript_path.exists():
         log("Fetching transcript...", "📝")
-        
+
         for attempt in range(1, RETRY_ATTEMPTS + 1):
             cmd = [
                 "yt-dlp",
@@ -183,21 +174,20 @@ def download_video_and_transcript(video: dict) -> tuple[Path | None, str | None]
                 "--skip-download",
                 "--no-warnings",
                 "--socket-timeout", "30",
-                "-U", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+                "--user-agent", USER_AGENT,
+                *cookies_args(),
                 "-o", str(base_path),
                 video["url"]
             ]
-            
             result = subprocess.run(cmd, capture_output=True, text=True)
             if result.returncode == 0:
                 break
-            
+
             if attempt < RETRY_ATTEMPTS:
                 wait_time = RETRY_DELAY * (2 ** (attempt - 1))
                 print(f"  ⏳ Transcript fetch failed, retrying in {wait_time}s...")
                 time.sleep(wait_time)
 
-        # Convert .vtt to plain text
         vtt_files = list(VIDEOS_DIR.glob(f"{vid_id}*.vtt"))
         if vtt_files:
             raw = vtt_files[0].read_text(encoding="utf-8", errors="ignore")
@@ -255,7 +245,6 @@ def ai_find_clips(transcript: str, video_title: str) -> list[dict]:
     genai.configure(api_key=GEMINI_API_KEY)
     model = genai.GenerativeModel("gemini-1.5-flash")
 
-    # Trim transcript if huge (Gemini free tier has limits)
     max_chars = 80000
     if len(transcript) > max_chars:
         transcript = transcript[:max_chars]
@@ -290,15 +279,11 @@ TRANSCRIPT:
     try:
         response = model.generate_content(prompt)
         raw = response.text.strip()
-
-        # Strip markdown code fences if present
         raw = re.sub(r'^```(?:json)?\s*', '', raw)
         raw = re.sub(r'\s*```$', '', raw)
-
         clips = json.loads(raw)
         log(f"Gemini found {len(clips)} clip suggestions", "✅")
         return clips
-
     except json.JSONDecodeError as e:
         print(f"  Gemini returned invalid JSON: {e}")
         print(f"  Raw response: {response.text[:300]}")
@@ -349,11 +334,11 @@ def cut_clips(video_path: Path, clips: list[dict], video_title: str):
 
         cmd = [
             "ffmpeg",
-            "-y",                          # overwrite without asking
-            "-ss", str(start_sec),         # seek to start
-            "-i", str(video_path),         # input file
-            "-t", str(duration),           # duration to cut
-            "-vf", "scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2",  # vertical 9:16
+            "-y",
+            "-ss", str(start_sec),
+            "-i", str(video_path),
+            "-t", str(duration),
+            "-vf", "scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2",
             "-c:v", "libx264",
             "-preset", "fast",
             "-crf", "23",
@@ -370,7 +355,6 @@ def cut_clips(video_path: Path, clips: list[dict], video_title: str):
             print(f"         ✅ Saved: {out_path.name} ({size_mb:.1f} MB)")
             cut_count += 1
 
-            # Save metadata alongside the clip
             meta_path = out_path.with_suffix(".json")
             meta_path.write_text(json.dumps({
                 "title":    clip.get("title"),
@@ -391,17 +375,21 @@ def run(channel_input: str):
     setup()
 
     if not GEMINI_API_KEY:
-        print("\n❌  GEMINI_API_KEY not set. Locally: export GEMINI_API_KEY=your_key | GitHub: Settings → Secrets → GEMINI_API_KEY")
+        print("\n❌  GEMINI_API_KEY not set.")
+        print("    Locally: export GEMINI_API_KEY=your_key")
+        print("    GitHub: Settings → Secrets → GEMINI_API_KEY")
         print("    Get a free key at: https://aistudio.google.com/app/apikey\n")
         sys.exit(1)
+
+    if not Path(COOKIES_FILE).exists():
+        print("\n⚠️  cookies.txt not found — YouTube will likely block requests from CI IPs.")
+        print("    See README for how to set up YOUTUBE_COOKIES_B64 secret.\n")
 
     print("\n" + "="*55)
     print("  SHORTS CLIPPER  —  Auto Pipeline")
     print("="*55)
 
-    # Step 1: Find viral videos
     videos = get_viral_videos(channel_input)
-
     total_clips = 0
 
     for video in videos:
@@ -409,7 +397,6 @@ def run(channel_input: str):
         print(f"Processing: {video['title'][:60]}")
         print("-"*55)
 
-        # Step 2: Download video + transcript
         video_path, transcript = download_video_and_transcript(video)
         if not video_path:
             print("  Skipping — download failed.")
@@ -418,13 +405,11 @@ def run(channel_input: str):
             print("  Skipping — no transcript available.")
             continue
 
-        # Step 3: AI finds best clips
         clips = ai_find_clips(transcript, video["title"])
         if not clips:
             print("  Skipping — no clips found.")
             continue
 
-        # Step 4: ffmpeg cuts the clips
         count = cut_clips(video_path, clips, video["title"])
         total_clips += count
 
@@ -433,7 +418,6 @@ def run(channel_input: str):
     print("="*55 + "\n")
 
 
-# ── ENTRY POINT ──────────────────────────────────────────────────────────
 if __name__ == "__main__":
     if len(sys.argv) < 2:
         print("\nUsage:")

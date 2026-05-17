@@ -3,7 +3,7 @@ name: Shorts Clipper
 on:
   schedule:
     - cron: '0 9 * * 1'   # Every Monday at 9am UTC
-  workflow_dispatch:        # Also lets you trigger it manually from GitHub
+  workflow_dispatch:
     inputs:
       channel:
         description: 'YouTube channel (e.g. @freecodecamp)'
@@ -13,7 +13,7 @@ on:
 jobs:
   clip:
     runs-on: ubuntu-latest
-    timeout-minutes: 120    # 4hr video downloads can take a while
+    timeout-minutes: 120
 
     steps:
       - name: Checkout repo
@@ -30,11 +30,14 @@ jobs:
       - name: Install Python dependencies
         run: pip install yt-dlp google-generativeai
 
+      - name: Restore YouTube cookies
+        run: |
+          echo "${{ secrets.YOUTUBE_COOKIES_B64 }}" | base64 -d > cookies.txt
+
       - name: Run Shorts Clipper
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         run: |
-          # Use manual input channel if triggered manually, else use default
           CHANNEL="${{ github.event.inputs.channel || '@freecodecamp' }}"
           python shorts_clipper.py "$CHANNEL"
 
@@ -43,4 +46,4 @@ jobs:
         with:
           name: shorts-${{ github.run_number }}
           path: shorts_output/
-          retention-days: 7    # GitHub keeps them for 7 days, then auto-deletes
+          retention-days: 7
