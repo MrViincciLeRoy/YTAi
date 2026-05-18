@@ -25,7 +25,13 @@ SHORT_MIN_SEC   = 45
 SHORT_MAX_SEC   = 170
 RETRY_ATTEMPTS  = 3
 RETRY_DELAY     = 5
+COOKIES_FILE    = "cookies.txt"
 # ──────────────────────────────────────────────────────────────────────────
+
+def cookies_args() -> list:
+    if Path(COOKIES_FILE).exists() and Path(COOKIES_FILE).stat().st_size > 0:
+        return ["--cookies", COOKIES_FILE]
+    return []
 
 def setup():
     OUTPUT_DIR.mkdir(exist_ok=True)
@@ -137,8 +143,7 @@ def download_video_and_transcript(video: dict) -> tuple[Path | None, str | None]
         for attempt in range(1, RETRY_ATTEMPTS + 1):
             cmd = [
                 "yt-dlp",
-                # Use iOS client — no PO token required, bypasses bot detection
-                "--extractor-args", "youtube:player-client=ios",
+                *cookies_args(),
                 "-f", "bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
                 "--merge-output-format", "mp4",
                 "-o", str(video_path),
@@ -165,7 +170,7 @@ def download_video_and_transcript(video: dict) -> tuple[Path | None, str | None]
         for attempt in range(1, RETRY_ATTEMPTS + 1):
             cmd = [
                 "yt-dlp",
-                "--extractor-args", "youtube:player-client=ios",
+                *cookies_args(),
                 "--write-auto-subs",
                 "--sub-format", "vtt",
                 "--sub-lang", "en",

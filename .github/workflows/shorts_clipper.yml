@@ -2,7 +2,7 @@ name: Shorts Clipper
 
 on:
   schedule:
-    - cron: '0 9 * * 1'   # Every Monday at 9am UTC
+    - cron: '0 9 * * 1'
   workflow_dispatch:
     inputs:
       channel:
@@ -29,6 +29,14 @@ jobs:
 
       - name: Install Python dependencies
         run: pip install yt-dlp google-generativeai
+
+      - name: Write YouTube cookies
+        run: |
+          cat > cookies.txt << 'COOKIES'
+          ${{ secrets.YOUTUBE_COOKIES }}
+          COOKIES
+          echo "First line: $(head -1 cookies.txt)"
+          echo "Lines: $(wc -l < cookies.txt)"
 
       - name: Run Shorts Clipper
         env:
