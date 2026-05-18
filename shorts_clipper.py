@@ -144,7 +144,7 @@ def download_video_and_transcript(video: dict) -> tuple[Path | None, str | None]
             cmd = [
                 "yt-dlp",
                 *cookies_args(),
-                "-f", "bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
+                "-f", "bestvideo[height<=1080]+bestaudio/best[height<=1080]/best",
                 "--merge-output-format", "mp4",
                 "-o", str(video_path),
                 "--no-warnings",
