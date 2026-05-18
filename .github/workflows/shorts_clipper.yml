@@ -38,6 +38,13 @@ jobs:
           echo "First line: $(head -1 cookies.txt)"
           echo "Lines: $(wc -l < cookies.txt)"
 
+      - name: Debug available formats
+        run: |
+          cat > cookies.txt << 'COOKIES'
+          ${{ secrets.YOUTUBE_COOKIES }}
+          COOKIES
+          yt-dlp --cookies cookies.txt --list-formats "https://www.youtube.com/watch?v=C842vFY5kRo" 2>&1 | head -50
+
       - name: Run Shorts Clipper
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
