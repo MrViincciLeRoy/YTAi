@@ -21,7 +21,7 @@ RETRY_ATTEMPTS  = 3
 RETRY_DELAY     = 5
 COOKIES_FILE    = "cookies.txt"
 
-EXTRACTOR_ARGS  = "youtube:player_client=ios,android,web"
+EXTRACTOR_ARGS  = "youtube:player_client=tv_embedded,web_creator,web"
 
 
 def cookies_args() -> list:
@@ -147,7 +147,8 @@ def download_video_and_transcript(video: dict) -> tuple[Path | None, str | None]
                 "yt-dlp",
                 *cookies_args(),
                 "--extractor-args", EXTRACTOR_ARGS,
-                "-f", "best[height<=1080]/best",
+                "-f", "bestvideo[height<=1080]+bestaudio/best[height<=1080]/best",
+                "--merge-output-format", "mp4",
                 "-o", str(video_path),
                 "--no-warnings",
                 "--socket-timeout", "30",
@@ -158,7 +159,7 @@ def download_video_and_transcript(video: dict) -> tuple[Path | None, str | None]
                 break
             if attempt < RETRY_ATTEMPTS:
                 wait = RETRY_DELAY * (2 ** (attempt - 1))
-                print(f"  ⏳ Retrying download in {wait}s... stderr: {result.stderr[:100]}")
+                print(f"  ⏳ Retrying download in {wait}s... stderr: {result.stderr[:150]}")
                 time.sleep(wait)
             else:
                 print(f"  Download failed: {result.stderr[:300]}")

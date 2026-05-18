@@ -24,6 +24,11 @@ jobs:
         with:
           python-version: '3.12'
 
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
       - name: Install ffmpeg
         run: sudo apt-get install -y ffmpeg
 
@@ -41,7 +46,7 @@ jobs:
       - name: Debug available formats
         run: |
           yt-dlp \
-            --extractor-args "youtube:player_client=ios,android,web" \
+            --extractor-args "youtube:player_client=tv_embedded,web_creator,web" \
             --cookies cookies.txt \
             --list-formats \
             "https://www.youtube.com/watch?v=C842vFY5kRo" 2>&1 | head -50
