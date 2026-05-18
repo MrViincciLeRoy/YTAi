@@ -28,7 +28,7 @@ jobs:
         run: sudo apt-get install -y ffmpeg
 
       - name: Install Python dependencies
-        run: pip install yt-dlp google-generativeai
+        run: pip install -U yt-dlp google-generativeai
 
       - name: Write YouTube cookies
         run: |
@@ -40,10 +40,11 @@ jobs:
 
       - name: Debug available formats
         run: |
-          cat > cookies.txt << 'COOKIES'
-          ${{ secrets.YOUTUBE_COOKIES }}
-          COOKIES
-          yt-dlp --cookies cookies.txt --list-formats "https://www.youtube.com/watch?v=C842vFY5kRo" 2>&1 | head -50
+          yt-dlp \
+            --extractor-args "youtube:player_client=ios,android,web" \
+            --cookies cookies.txt \
+            --list-formats \
+            "https://www.youtube.com/watch?v=C842vFY5kRo" 2>&1 | head -50
 
       - name: Run Shorts Clipper
         env:

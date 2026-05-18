@@ -1,9 +1,4 @@
 #!/usr/bin/env python3
-"""
-Shorts Clipper - Automated YouTube Shorts Generator
-Pipeline: Channel → Viral Videos (YouTube Data API) → Download (iOS client) → AI Clip Detection → ffmpeg Cut
-"""
-
 import os
 import re
 import json
@@ -14,7 +9,6 @@ from pathlib import Path
 import urllib.request
 import urllib.parse
 
-# ── CONFIG ─────────────────────────────────────────────────────────────────
 GEMINI_API_KEY  = os.environ.get("GEMINI_API_KEY", "")
 YOUTUBE_API_KEY = os.environ.get("YOUTUBE_API_KEY", "")
 OUTPUT_DIR      = Path("shorts_output")
@@ -26,19 +20,24 @@ SHORT_MAX_SEC   = 170
 RETRY_ATTEMPTS  = 3
 RETRY_DELAY     = 5
 COOKIES_FILE    = "cookies.txt"
-# ──────────────────────────────────────────────────────────────────────────
+
+EXTRACTOR_ARGS  = "youtube:player_client=ios,android,web"
+
 
 def cookies_args() -> list:
     if Path(COOKIES_FILE).exists() and Path(COOKIES_FILE).stat().st_size > 0:
         return ["--cookies", COOKIES_FILE]
     return []
 
+
 def setup():
     OUTPUT_DIR.mkdir(exist_ok=True)
     VIDEOS_DIR.mkdir(exist_ok=True)
 
+
 def log(msg, emoji="▶"):
     print(f"\n{emoji}  {msg}")
+
 
 def yt_api(endpoint: str, params: dict) -> dict:
     params["key"] = YOUTUBE_API_KEY
@@ -46,12 +45,14 @@ def yt_api(endpoint: str, params: dict) -> dict:
     with urllib.request.urlopen(url, timeout=15) as r:
         return json.loads(r.read())
 
+
 def iso8601_to_seconds(duration: str) -> int:
     m = re.match(r'PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?', duration)
     if not m:
         return 0
     h, mn, s = (int(x or 0) for x in m.groups())
     return h * 3600 + mn * 60 + s
+
 
 def get_channel_id(handle: str) -> str:
     handle = handle.lstrip("@")
@@ -66,6 +67,7 @@ def get_channel_id(handle: str) -> str:
         print(f"Channel not found: {handle}")
         sys.exit(1)
     return items[0]["snippet"]["channelId"]
+
 
 def get_viral_videos(channel_input: str) -> list[dict]:
     log(f"Scanning channel: {channel_input}", "🔍")
@@ -144,6 +146,7 @@ def download_video_and_transcript(video: dict) -> tuple[Path | None, str | None]
             cmd = [
                 "yt-dlp",
                 *cookies_args(),
+                "--extractor-args", EXTRACTOR_ARGS,
                 "-f", "bestvideo[height<=1080]+bestaudio/best[height<=1080]/best",
                 "--merge-output-format", "mp4",
                 "-o", str(video_path),
@@ -171,6 +174,7 @@ def download_video_and_transcript(video: dict) -> tuple[Path | None, str | None]
             cmd = [
                 "yt-dlp",
                 *cookies_args(),
+                "--extractor-args", EXTRACTOR_ARGS,
                 "--write-auto-subs",
                 "--sub-format", "vtt",
                 "--sub-lang", "en",
