@@ -38,17 +38,32 @@ jobs:
         run: |
           python - <<'EOF'
           import os
-          import sys
           from pytubefix import YouTube
           from pytubefix.cli import on_progress
 
           url     = os.environ["VIDEO_URL"]
           quality = os.environ["QUALITY"]
 
-          print(f"Fetching: {url}")
-          yt = YouTube(url, on_progress_callback=on_progress)
-          print(f"Title   : {yt.title}")
-          print(f"Length  : {yt.length}s")
+          # Try clients in order — IOS & ANDROID bypass bot detection
+          # without needing PO tokens or cookies
+          clients = ["IOS", "ANDROID", "MWEB"]
+          yt = None
+
+          for client in clients:
+              try:
+                  print(f"Trying client: {client}")
+                  yt = YouTube(url, client=client, on_progress_callback=on_progress)
+                  title = yt.title   # force metadata fetch to trigger errors early
+                  print(f"OK  Connected with {client} client")
+                  print(f"    Title : {title}")
+                  print(f"    Length: {yt.length}s")
+                  break
+              except Exception as e:
+                  print(f"ERR {client} failed: {e}")
+                  yt = None
+
+          if yt is None:
+              raise RuntimeError("All clients failed. See logs above.")
 
           # Pick the right stream
           if quality == "highest":
@@ -56,11 +71,9 @@ jobs:
           elif quality == "lowest":
               stream = yt.streams.get_lowest_resolution()
           else:
-              # e.g. "720p" → filter by res, fall back to highest if not found
-              res = quality
-              stream = yt.streams.filter(res=res, file_extension="mp4").first()
+              stream = yt.streams.filter(res=quality, file_extension="mp4").first()
               if not stream:
-                  print(f"[warn] {res} not available, falling back to highest resolution")
+                  print(f"WARN {quality} not available, falling back to highest")
                   stream = yt.streams.get_highest_resolution()
 
           print(f"Stream  : {stream.resolution} / {stream.mime_type}")
@@ -80,4 +93,4 @@ jobs:
         with:
           name: youtube-video
           path: downloaded/
-          retention-days: 3   # artifacts expire after 3 days — raise if you need longer
+          retention-days: 3
