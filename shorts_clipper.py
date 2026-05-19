@@ -22,30 +22,15 @@ RETRY_ATTEMPTS = 3
 RETRY_DELAY    = 5
 TOR_PROXY      = "socks5h://127.0.0.1:9050"
 
+# Used only for browse/search — NOT for player (that endpoint rejects old keys)
 INNERTUBE_KEY = "AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8"
 
-# Clients tried in order for player requests — first with plain url fields wins
-PLAYER_CLIENTS = [
-    {"clientName": "ANDROID_EMBEDDED_PLAYER", "clientVersion": "20.10.38",
-     "androidSdkVersion": 30,
-     "userAgent": "com.google.android.youtube/20.10.38 (Linux; U; Android 11) gzip",
-     "hl": "en", "gl": "US"},
-    {"clientName": "ANDROID", "clientVersion": "20.10.38",
-     "androidSdkVersion": 30,
-     "userAgent": "com.google.android.youtube/20.10.38 (Linux; U; Android 11) gzip",
-     "hl": "en", "gl": "US"},
-    {"clientName": "TVHTML5", "clientVersion": "7.20241201.13.00",
-     "hl": "en", "gl": "US"},
-    {"clientName": "IOS", "clientVersion": "20.10.3",
-     "hl": "en", "gl": "US"},
-]
 WEB_CONTEXT = {
-    "client": {"clientName": "WEB", "clientVersion": "2.20240101.00.00",
-               "hl": "en", "gl": "US"}
+    "client": {"clientName": "WEB", "clientVersion": "2.20240101.00.00", "hl": "en", "gl": "US"}
 }
 HEADERS = {
     "Content-Type":   "application/json",
-    "User-Agent":     "com.google.android.youtube/20.10.38 (Linux; U; Android 11) gzip",
+    "User-Agent":     "com.google.android.youtube/19.44.38 (Linux; U; Android 11) gzip",
     "X-Goog-Api-Key": INNERTUBE_KEY,
 }
 
@@ -70,7 +55,7 @@ def make_session() -> requests.Session:
         session.proxies.update({"http": TOR_PROXY, "https": TOR_PROXY})
         print("Routing through Tor")
     else:
-        print("Tor not running - direct connection")
+        print("Tor not running — direct connection")
     return session
 
 
@@ -102,9 +87,7 @@ def resolve_browse_id(channel_input: str) -> str:
         return channel_input
 
     handle = channel_input.lstrip("@")
-
-    # Try scraping the channel page — multiple patterns since YouTube's HTML varies
-    url = f"https://www.youtube.com/@{handle}"
+    url    = f"https://www.youtube.com/@{handle}"
     try:
         r = SESSION.get(url, timeout=20, headers={
             "User-Agent":      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
@@ -113,22 +96,21 @@ def resolve_browse_id(channel_input: str) -> str:
         })
         r.raise_for_status()
         html = r.text
-        patterns = [
+        for pat in [
             r'"browseId"\s*:\s*"(UC[\w\-]{22})"',
             r'"channelId"\s*:\s*"(UC[\w\-]{22})"',
             r'"externalId"\s*:\s*"(UC[\w\-]{22})"',
             r'youtube\.com/channel/(UC[\w\-]{22})',
-        ]
-        for pat in patterns:
+        ]:
             m = re.search(pat, html)
             if m:
                 return m.group(1)
     except Exception as e:
         print(f"  HTML scrape failed: {e}")
 
-    # Fallback: Innertube search for the channel handle
-    print(f"  HTML scrape found no browseId — trying Innertube search...")
+    print("  HTML scrape found no browseId — trying Innertube search...")
     data = innertube_post("search", {"query": handle})
+
     def walk_search(obj):
         if isinstance(obj, dict):
             if obj.get("channelId", "").startswith("UC"):
@@ -144,12 +126,10 @@ def resolve_browse_id(channel_input: str) -> str:
                 res = walk_search(v)
                 if res:
                     return res
-        return None
 
     found = walk_search(data)
     if found:
         return found
-
     raise RuntimeError(f"Could not resolve browseId for {channel_input}")
 
 
@@ -164,6 +144,7 @@ def get_viral_videos(channel_input: str) -> list:
     })
 
     raw_items = []
+
     def walk(obj):
         if isinstance(obj, dict):
             if "videoRenderer" in obj:
@@ -173,6 +154,7 @@ def get_viral_videos(channel_input: str) -> list:
         elif isinstance(obj, list):
             for v in obj:
                 walk(v)
+
     walk(data)
 
     videos = []
@@ -217,44 +199,128 @@ def get_viral_videos(channel_input: str) -> list:
 
 
 # ── Player / stream ────────────────────────────────────────────────────────────
+#
+# KEY FIX: YouTube's player endpoint rejects the old hardcoded INNERTUBE_KEY
+# with 404. Solution: hit /youtubei/v1/player WITHOUT ?key= and add the
+# required X-Youtube-Client-Name / X-Youtube-Client-Version headers per client.
+# Android (clientName=3) reliably returns plain url fields in streamingData.
+#
+PLAYER_CLIENTS = [
+    {
+        "ctx": {
+            "clientName":       "ANDROID",
+            "clientVersion":    "19.44.38",
+            "androidSdkVersion": 30,
+            "hl": "en", "gl": "US",
+            "utcOffsetMinutes":  0,
+        },
+        "headers": {
+            "X-Youtube-Client-Name":    "3",
+            "X-Youtube-Client-Version": "19.44.38",
+            "User-Agent": "com.google.android.youtube/19.44.38 (Linux; U; Android 11) gzip",
+        },
+    },
+    {
+        "ctx": {
+            "clientName":    "IOS",
+            "clientVersion": "19.45.4",
+            "deviceModel":   "iPhone16,2",
+            "hl": "en", "gl": "US",
+        },
+        "headers": {
+            "X-Youtube-Client-Name":    "5",
+            "X-Youtube-Client-Version": "19.45.4",
+            "User-Agent": "com.google.ios.youtube/19.45.4 (iPhone16,2; U; CPU iOS 17_5_1 like Mac OS X)",
+        },
+    },
+    {
+        "ctx": {
+            "clientName":    "TVHTML5",
+            "clientVersion": "7.20241201.13.00",
+            "hl": "en", "gl": "US",
+        },
+        "headers": {
+            "X-Youtube-Client-Name":    "7",
+            "X-Youtube-Client-Version": "7.20241201.13.00",
+            "User-Agent": "Mozilla/5.0 (SMART-TV; LINUX; Tizen 5.0) AppleWebKit/538.1 (KHTML, like Gecko) Version/5.0 TV Safari/538.1",
+        },
+    },
+    {
+        "ctx": {
+            "clientName":    "MWEB",
+            "clientVersion": "2.20240726.01.00",
+            "hl": "en", "gl": "US",
+        },
+        "headers": {
+            "X-Youtube-Client-Name":    "2",
+            "X-Youtube-Client-Version": "2.20240726.01.00",
+            "User-Agent": "Mozilla/5.0 (Linux; Android 11; Pixel 5) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/90.0.4430.91 Mobile Safari/537.36",
+        },
+    },
+]
 
-def get_player_data(video_id: str) -> tuple:
-    """
-    Try each client in PLAYER_CLIENTS until we get plain url fields.
-    Returns (player_data, client_context) so the caller knows which client worked.
-    """
-    for client in PLAYER_CLIENTS:
-        ctx  = {"client": client}
-        data = innertube_post("player", {"videoId": video_id}, context=ctx)
-        status = data.get("playabilityStatus", {}).get("status", "UNKNOWN")
-        fmts   = data.get("streamingData", {}).get("formats", [])
-        adap   = data.get("streamingData", {}).get("adaptiveFormats", [])
-        all_f  = fmts + adap
-        has_plain_url = any(f.get("url") for f in all_f)
-        print(f"  client={client['clientName']} status={status} fmts={len(fmts)} adap={len(adap)} plain_url={has_plain_url}")
-        if has_plain_url:
-            return data
-    # Return last attempt even if no plain urls (caller will handle)
-    return data
+PLAYER_URL = "https://www.youtube.com/youtubei/v1/player"
+
+
+def get_player_data(video_id: str) -> dict:
+    payload_base = {
+        "videoId":        video_id,
+        "contentCheckOk": True,
+        "racyCheckOk":    True,
+        "playbackContext": {
+            "contentPlaybackContext": {"html5Preference": "HTML5_PREF_WANTS"}
+        },
+    }
+
+    last_data = None
+    for cfg in PLAYER_CLIENTS:
+        body = {"context": {"client": cfg["ctx"]}, **payload_base}
+        hdrs = {
+            "Content-Type": "application/json",
+            "Origin":       "https://www.youtube.com",
+            "Referer":      "https://www.youtube.com/",
+            **cfg["headers"],
+        }
+        for attempt in range(1, RETRY_ATTEMPTS + 1):
+            try:
+                r = SESSION.post(PLAYER_URL, json=body, headers=hdrs, timeout=30)
+                r.raise_for_status()
+                data = r.json()
+
+                status    = data.get("playabilityStatus", {}).get("status", "UNKNOWN")
+                fmts      = data.get("streamingData", {}).get("formats", [])
+                adap      = data.get("streamingData", {}).get("adaptiveFormats", [])
+                has_plain = any(f.get("url") for f in fmts + adap)
+
+                print(f"  client={cfg['ctx']['clientName']} status={status} "
+                      f"fmts={len(fmts)} adap={len(adap)} plain_url={has_plain}")
+
+                last_data = data
+                if has_plain:
+                    return data
+                break  # no plain urls but didn't 4xx — try next client
+            except Exception as e:
+                if attempt < RETRY_ATTEMPTS:
+                    time.sleep(RETRY_DELAY * attempt)
+                else:
+                    print(f"  client={cfg['ctx']['clientName']} failed: {e}")
+
+    if last_data is not None:
+        return last_data
+    raise RuntimeError(f"All player clients failed for {video_id}")
 
 
 def best_stream_url(player_data: dict):
-    """
-    Prefer progressive formats (video+audio). Fall back to best video-only mp4.
-    Only return formats with a plain url — skip signatureCipher ones.
-    """
-    sd      = player_data.get("streamingData", {})
-    fmts    = [f for f in sd.get("formats", [])          if f.get("url")]
-    adap_v  = [f for f in sd.get("adaptiveFormats", [])  if f.get("url") and "video" in f.get("mimeType", "")]
+    sd     = player_data.get("streamingData", {})
+    fmts   = [f for f in sd.get("formats", [])         if f.get("url")]
+    adap_v = [f for f in sd.get("adaptiveFormats", []) if f.get("url") and "video" in f.get("mimeType", "")]
 
     if fmts:
         fmts.sort(key=lambda f: min(f.get("height", 0), 1080), reverse=True)
         return fmts[0]["url"]
-
     if adap_v:
         adap_v.sort(key=lambda f: min(f.get("height", 0), 1080), reverse=True)
         return adap_v[0]["url"]
-
     return None
 
 
@@ -263,8 +329,7 @@ def best_stream_url(player_data: dict):
 def download_video(video: dict) -> tuple:
     vid_id     = video["id"]
     safe_name  = re.sub(r"[^\w\-]", "_", video["title"])[:50]
-    base_path  = VIDEOS_DIR / f"{vid_id}_{safe_name}"
-    video_path = base_path.with_suffix(".mp4")
+    video_path = VIDEOS_DIR / f"{vid_id}_{safe_name}.mp4"
 
     print(f"\nDownloading: {video['title'][:60]}")
 
@@ -276,24 +341,25 @@ def download_video(video: dict) -> tuple:
                 player_data = get_player_data(vid_id)
                 stream_url  = best_stream_url(player_data)
                 if not stream_url:
-                    raise RuntimeError("No usable stream URL")
+                    raise RuntimeError("No usable stream URL (all formats use signatureCipher)")
 
-                # Use a direct session for CDN download — googlevideo.com blocks Tor exit IPs
                 dl_session = requests.Session()
-                dl_session.headers.update({"User-Agent": "com.google.android.youtube/20.10.38 (Linux; U; Android 11) gzip"})
+                dl_session.headers.update({
+                    "User-Agent": "com.google.android.youtube/19.44.38 (Linux; U; Android 11) gzip"
+                })
 
-                r = dl_session.get(stream_url, stream=True, timeout=60)
+                r     = dl_session.get(stream_url, stream=True, timeout=60)
                 r.raise_for_status()
+                total = int(r.headers.get("content-length", 0))
+                recv  = 0
 
-                total    = int(r.headers.get("content-length", 0))
-                received = 0
                 with open(video_path, "wb") as f:
                     for chunk in r.iter_content(chunk_size=262144):
                         if chunk:
                             f.write(chunk)
-                            received += len(chunk)
+                            recv += len(chunk)
                             if total:
-                                print(f"\r  {received/total*100:.1f}%", end="", flush=True)
+                                print(f"\r  {recv/total*100:.1f}%", end="", flush=True)
                 print()
                 print(f"  Saved {video_path.stat().st_size / 1e6:.1f} MB")
                 break
@@ -318,7 +384,7 @@ def download_video(video: dict) -> tuple:
 # ── Transcript ─────────────────────────────────────────────────────────────────
 
 def get_transcript(video_id: str, player_data: dict = None) -> str:
-    print(f"\nFetching transcript...")
+    print("Fetching transcript...")
 
     if player_data is None:
         player_data = get_player_data(video_id)
@@ -343,7 +409,6 @@ def get_transcript(video_id: str, player_data: dict = None) -> str:
         return None
 
     url = re.sub(r"&fmt=[^&]+", "", base_url)
-
     try:
         r = SESSION.get(url, timeout=20)
         r.raise_for_status()
@@ -364,14 +429,14 @@ def parse_caption_xml(xml_text: str) -> str:
             clean = (clean.replace("&amp;", "&").replace("&lt;", "<")
                          .replace("&gt;", ">").replace("&#39;", "'"))
             if clean:
-                h, m, s = int(start//3600), int((start%3600)//60), int(start%60)
+                h, m, s = int(start // 3600), int((start % 3600) // 60), int(start % 60)
                 lines.append(f"{h:02d}:{m:02d}:{s:02d} {clean}")
     except ET.ParseError as e:
         print(f"  XML parse error: {e}")
     return "\n".join(lines)
 
 
-# ── Gemini (pure urllib) ───────────────────────────────────────────────────────
+# ── Gemini ─────────────────────────────────────────────────────────────────────
 
 def ai_find_clips(transcript: str, video_title: str) -> list:
     print("\nAsking Gemini for clip suggestions...")
@@ -415,15 +480,17 @@ TRANSCRIPT:
         f"gemini-1.5-flash:generateContent?key={GEMINI_API_KEY}"
     )
 
-    req = urllib.request.Request(url, data=payload,
-                                 headers={"Content-Type": "application/json"},
-                                 method="POST")
+    req = urllib.request.Request(
+        url, data=payload,
+        headers={"Content-Type": "application/json"},
+        method="POST"
+    )
     try:
         with urllib.request.urlopen(req, timeout=60) as resp:
             data = json.loads(resp.read().decode("utf-8"))
-        raw   = data["candidates"][0]["content"]["parts"][0]["text"].strip()
-        raw   = re.sub(r"^```(?:json)?\s*", "", raw)
-        raw   = re.sub(r"\s*```$", "", raw)
+        raw  = data["candidates"][0]["content"]["parts"][0]["text"].strip()
+        raw  = re.sub(r"^```(?:json)?\s*", "", raw)
+        raw  = re.sub(r"\s*```$", "", raw)
         clips = json.loads(raw)
         print(f"  Gemini found {len(clips)} clips")
         return clips
@@ -515,7 +582,7 @@ def run(channel_input: str):
     SESSION = make_session()
 
     print("\n" + "=" * 55)
-    print("  SHORTS CLIPPER  - Pure Requests")
+    print("  SHORTS CLIPPER")
     print("=" * 55)
 
     videos      = get_viral_videos(channel_input)
@@ -528,15 +595,15 @@ def run(channel_input: str):
 
         video_path, transcript = download_video(video)
         if not video_path:
-            print("  Skipping - download failed.")
+            print("  Skipping — download failed.")
             continue
         if not transcript:
-            print("  Skipping - no transcript.")
+            print("  Skipping — no transcript.")
             continue
 
         clips = ai_find_clips(transcript, video["title"])
         if not clips:
-            print("  Skipping - no clips found.")
+            print("  Skipping — no clips found.")
             continue
 
         total_clips += cut_clips(video_path, clips, video["title"])
