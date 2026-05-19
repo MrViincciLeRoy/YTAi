@@ -22,24 +22,26 @@ RETRY_ATTEMPTS = 3
 RETRY_DELAY    = 5
 TOR_PROXY      = "socks5h://127.0.0.1:9050"
 
-INNERTUBE_KEY     = "AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8"
-INNERTUBE_CONTEXT = {
-    "client": {
-        "clientName":        "ANDROID",
-        "clientVersion":     "20.10.38",
-        "androidSdkVersion": 30,
-        "userAgent":         "com.google.android.youtube/20.10.38 (Linux; U; Android 11) gzip",
-        "hl": "en",
-        "gl": "US",
-    }
-}
+INNERTUBE_KEY = "AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8"
+
+# Clients tried in order for player requests — first with plain url fields wins
+PLAYER_CLIENTS = [
+    {"clientName": "ANDROID_EMBEDDED_PLAYER", "clientVersion": "20.10.38",
+     "androidSdkVersion": 30,
+     "userAgent": "com.google.android.youtube/20.10.38 (Linux; U; Android 11) gzip",
+     "hl": "en", "gl": "US"},
+    {"clientName": "ANDROID", "clientVersion": "20.10.38",
+     "androidSdkVersion": 30,
+     "userAgent": "com.google.android.youtube/20.10.38 (Linux; U; Android 11) gzip",
+     "hl": "en", "gl": "US"},
+    {"clientName": "TVHTML5", "clientVersion": "7.20241201.13.00",
+     "hl": "en", "gl": "US"},
+    {"clientName": "IOS", "clientVersion": "20.10.3",
+     "hl": "en", "gl": "US"},
+]
 WEB_CONTEXT = {
-    "client": {
-        "clientName":    "WEB",
-        "clientVersion": "2.20240101.00.00",
-        "hl": "en",
-        "gl": "US",
-    }
+    "client": {"clientName": "WEB", "clientVersion": "2.20240101.00.00",
+               "hl": "en", "gl": "US"}
 }
 HEADERS = {
     "Content-Type":   "application/json",
@@ -77,9 +79,10 @@ SESSION = None
 
 # ── Innertube helpers ──────────────────────────────────────────────────────────
 
-def innertube_post(endpoint: str, payload: dict, use_web=False) -> dict:
+def innertube_post(endpoint: str, payload: dict, context: dict = None) -> dict:
     url  = f"https://www.youtube.com/youtubei/v1/{endpoint}?key={INNERTUBE_KEY}"
-    body = {"context": WEB_CONTEXT if use_web else INNERTUBE_CONTEXT, **payload}
+    ctx  = context if context is not None else WEB_CONTEXT
+    body = {"context": ctx, **payload}
     for attempt in range(1, RETRY_ATTEMPTS + 1):
         try:
             r = SESSION.post(url, json=body, timeout=30)
@@ -125,7 +128,7 @@ def resolve_browse_id(channel_input: str) -> str:
 
     # Fallback: Innertube search for the channel handle
     print(f"  HTML scrape found no browseId — trying Innertube search...")
-    data = innertube_post("search", {"query": handle}, use_web=True)
+    data = innertube_post("search", {"query": handle})
     def walk_search(obj):
         if isinstance(obj, dict):
             if obj.get("channelId", "").startswith("UC"):
@@ -158,7 +161,7 @@ def get_viral_videos(channel_input: str) -> list:
     data = innertube_post("browse", {
         "browseId": browse_id,
         "params":   "EgZ2aWRlb3PyBgQKAjoA",
-    }, use_web=True)
+    })
 
     raw_items = []
     def walk(obj):
@@ -215,22 +218,44 @@ def get_viral_videos(channel_input: str) -> list:
 
 # ── Player / stream ────────────────────────────────────────────────────────────
 
-def get_player_data(video_id: str) -> dict:
-    return innertube_post("player", {"videoId": video_id})
+def get_player_data(video_id: str) -> tuple:
+    """
+    Try each client in PLAYER_CLIENTS until we get plain url fields.
+    Returns (player_data, client_context) so the caller knows which client worked.
+    """
+    for client in PLAYER_CLIENTS:
+        ctx  = {"client": client}
+        data = innertube_post("player", {"videoId": video_id}, context=ctx)
+        status = data.get("playabilityStatus", {}).get("status", "UNKNOWN")
+        fmts   = data.get("streamingData", {}).get("formats", [])
+        adap   = data.get("streamingData", {}).get("adaptiveFormats", [])
+        all_f  = fmts + adap
+        has_plain_url = any(f.get("url") for f in all_f)
+        print(f"  client={client['clientName']} status={status} fmts={len(fmts)} adap={len(adap)} plain_url={has_plain_url}")
+        if has_plain_url:
+            return data
+    # Return last attempt even if no plain urls (caller will handle)
+    return data
 
 
 def best_stream_url(player_data: dict):
-    formats = player_data.get("streamingData", {}).get("formats", [])
-    if not formats:
-        formats = [
-            f for f in player_data.get("streamingData", {}).get("adaptiveFormats", [])
-            if f.get("mimeType", "").startswith("video/mp4")
-        ]
-    formats = [f for f in formats if f.get("url")]
-    if not formats:
-        return None
-    formats.sort(key=lambda f: min(f.get("height", 0), 1080), reverse=True)
-    return formats[0]["url"]
+    """
+    Prefer progressive formats (video+audio). Fall back to best video-only mp4.
+    Only return formats with a plain url — skip signatureCipher ones.
+    """
+    sd      = player_data.get("streamingData", {})
+    fmts    = [f for f in sd.get("formats", [])          if f.get("url")]
+    adap_v  = [f for f in sd.get("adaptiveFormats", [])  if f.get("url") and "video" in f.get("mimeType", "")]
+
+    if fmts:
+        fmts.sort(key=lambda f: min(f.get("height", 0), 1080), reverse=True)
+        return fmts[0]["url"]
+
+    if adap_v:
+        adap_v.sort(key=lambda f: min(f.get("height", 0), 1080), reverse=True)
+        return adap_v[0]["url"]
+
+    return None
 
 
 # ── Download ───────────────────────────────────────────────────────────────────
@@ -253,7 +278,11 @@ def download_video(video: dict) -> tuple:
                 if not stream_url:
                     raise RuntimeError("No usable stream URL")
 
-                r = SESSION.get(stream_url, stream=True, timeout=60)
+                # Use a direct session for CDN download — googlevideo.com blocks Tor exit IPs
+                dl_session = requests.Session()
+                dl_session.headers.update({"User-Agent": "com.google.android.youtube/20.10.38 (Linux; U; Android 11) gzip"})
+
+                r = dl_session.get(stream_url, stream=True, timeout=60)
                 r.raise_for_status()
 
                 total    = int(r.headers.get("content-length", 0))
