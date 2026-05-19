@@ -97,17 +97,57 @@ def innertube_post(endpoint: str, payload: dict, use_web=False) -> dict:
 def resolve_browse_id(channel_input: str) -> str:
     if re.match(r'^UC[\w\-]{22}$', channel_input):
         return channel_input
+
     handle = channel_input.lstrip("@")
-    url    = f"https://www.youtube.com/@{handle}"
-    r = SESSION.get(url, timeout=20, headers={
-        "User-Agent":      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-        "Accept-Language": "en-US,en;q=0.9",
-    })
-    r.raise_for_status()
-    m = re.search(r'"browseId"\s*:\s*"(UC[\w\-]{22})"', r.text)
-    if not m:
-        raise RuntimeError(f"Could not resolve browseId for {channel_input}")
-    return m.group(1)
+
+    # Try scraping the channel page — multiple patterns since YouTube's HTML varies
+    url = f"https://www.youtube.com/@{handle}"
+    try:
+        r = SESSION.get(url, timeout=20, headers={
+            "User-Agent":      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            "Accept-Language": "en-US,en;q=0.9",
+            "Accept":          "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        })
+        r.raise_for_status()
+        html = r.text
+        patterns = [
+            r'"browseId"\s*:\s*"(UC[\w\-]{22})"',
+            r'"channelId"\s*:\s*"(UC[\w\-]{22})"',
+            r'"externalId"\s*:\s*"(UC[\w\-]{22})"',
+            r'youtube\.com/channel/(UC[\w\-]{22})',
+        ]
+        for pat in patterns:
+            m = re.search(pat, html)
+            if m:
+                return m.group(1)
+    except Exception as e:
+        print(f"  HTML scrape failed: {e}")
+
+    # Fallback: Innertube search for the channel handle
+    print(f"  HTML scrape found no browseId — trying Innertube search...")
+    data = innertube_post("search", {"query": handle}, use_web=True)
+    def walk_search(obj):
+        if isinstance(obj, dict):
+            if obj.get("channelId", "").startswith("UC"):
+                return obj["channelId"]
+            if obj.get("browseId", "").startswith("UC"):
+                return obj["browseId"]
+            for v in obj.values():
+                res = walk_search(v)
+                if res:
+                    return res
+        elif isinstance(obj, list):
+            for v in obj:
+                res = walk_search(v)
+                if res:
+                    return res
+        return None
+
+    found = walk_search(data)
+    if found:
+        return found
+
+    raise RuntimeError(f"Could not resolve browseId for {channel_input}")
 
 
 def get_viral_videos(channel_input: str) -> list:
