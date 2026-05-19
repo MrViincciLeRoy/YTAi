@@ -5,9 +5,9 @@ import json
 import subprocess
 import sys
 import time
-from pathlib import Path
-import urllib.request
+import socket
 import urllib.parse
+from pathlib import Path
 
 GEMINI_API_KEY  = os.environ.get("GEMINI_API_KEY", "")
 YOUTUBE_API_KEY = os.environ.get("YOUTUBE_API_KEY", "")
@@ -22,11 +22,59 @@ RETRY_DELAY     = 5
 COOKIES_FILE    = "cookies.txt"
 
 EXTRACTOR_ARGS  = "youtube:player_client=tv_embedded,web_creator,web"
+TOR_PROXY       = "socks5h://127.0.0.1:9050"
 
+# ── Tor setup ──────────────────────────────────────────────────────────────────
+
+def tor_is_running() -> bool:
+    s = socket.socket()
+    s.settimeout(2)
+    try:
+        s.connect(("127.0.0.1", 9050))
+        return True
+    except Exception:
+        return False
+    finally:
+        s.close()
+
+
+def make_session():
+    """Build a requests.Session, routed through Tor if available."""
+    try:
+        import requests
+    except ImportError:
+        print("requests not installed — run: pip install requests[socks]")
+        sys.exit(1)
+
+    session = requests.Session()
+    session.headers.update({
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+    })
+
+    if tor_is_running():
+        session.proxies.update({"http": TOR_PROXY, "https": TOR_PROXY})
+        print("🧅  Tor detected — routing API calls through Tor")
+    else:
+        print("⚠   Tor not running — using direct connection")
+
+    return session
+
+
+# Shared session (initialised once at startup)
+SESSION = None
+
+
+# ── Helpers ────────────────────────────────────────────────────────────────────
 
 def cookies_args() -> list:
     if Path(COOKIES_FILE).exists() and Path(COOKIES_FILE).stat().st_size > 0:
         return ["--cookies", COOKIES_FILE]
+    return []
+
+
+def ytdlp_proxy_args() -> list:
+    if tor_is_running():
+        return ["--proxy", TOR_PROXY]
     return []
 
 
@@ -42,8 +90,9 @@ def log(msg, emoji="▶"):
 def yt_api(endpoint: str, params: dict) -> dict:
     params["key"] = YOUTUBE_API_KEY
     url = f"https://www.googleapis.com/youtube/v3/{endpoint}?" + urllib.parse.urlencode(params)
-    with urllib.request.urlopen(url, timeout=15) as r:
-        return json.loads(r.read())
+    r = SESSION.get(url, timeout=15)
+    r.raise_for_status()
+    return r.json()
 
 
 def iso8601_to_seconds(duration: str) -> int:
@@ -54,19 +103,22 @@ def iso8601_to_seconds(duration: str) -> int:
     return h * 3600 + mn * 60 + s
 
 
+# ── Channel / video discovery ──────────────────────────────────────────────────
+
 def get_channel_id(handle: str) -> str:
     handle = handle.lstrip("@")
-    data = yt_api("search", {
-        "part": "snippet",
-        "q": handle,
-        "type": "channel",
-        "maxResults": 1
-    })
+    # forHandle — direct, cheap, no 400 errors
+    data = yt_api("channels", {"part": "id", "forHandle": handle})
     items = data.get("items", [])
-    if not items:
-        print(f"Channel not found: {handle}")
-        sys.exit(1)
-    return items[0]["snippet"]["channelId"]
+    if items:
+        return items[0]["id"]
+    # Fallback for older channels without @ handle
+    data = yt_api("channels", {"part": "id", "forUsername": handle})
+    items = data.get("items", [])
+    if items:
+        return items[0]["id"]
+    print(f"Channel not found: {handle}")
+    sys.exit(1)
 
 
 def get_viral_videos(channel_input: str) -> list[dict]:
@@ -79,10 +131,7 @@ def get_viral_videos(channel_input: str) -> list[dict]:
 
     log(f"Channel ID: {channel_id}", "📋")
 
-    data = yt_api("channels", {
-        "part": "contentDetails",
-        "id": channel_id
-    })
+    data = yt_api("channels", {"part": "contentDetails", "id": channel_id})
     uploads_playlist = data["items"][0]["contentDetails"]["relatedPlaylists"]["uploads"]
 
     playlist_data = yt_api("playlistItems", {
@@ -133,6 +182,8 @@ def get_viral_videos(channel_input: str) -> list[dict]:
     return top
 
 
+# ── Download ───────────────────────────────────────────────────────────────────
+
 def download_video_and_transcript(video: dict) -> tuple[Path | None, str | None]:
     vid_id    = video["id"]
     safe_name = re.sub(r'[^\w\-]', '_', video["title"])[:50]
@@ -146,6 +197,7 @@ def download_video_and_transcript(video: dict) -> tuple[Path | None, str | None]
             cmd = [
                 "yt-dlp",
                 *cookies_args(),
+                *ytdlp_proxy_args(),
                 "--extractor-args", EXTRACTOR_ARGS,
                 "-f", "bv*[height<=1080]+ba/b[height<=1080]/bv*+ba/b",
                 "--merge-output-format", "mp4",
@@ -174,6 +226,7 @@ def download_video_and_transcript(video: dict) -> tuple[Path | None, str | None]
             cmd = [
                 "yt-dlp",
                 *cookies_args(),
+                *ytdlp_proxy_args(),
                 "--extractor-args", EXTRACTOR_ARGS,
                 "--write-auto-subs",
                 "--sub-format", "vtt",
@@ -233,6 +286,8 @@ def vtt_to_plain(vtt_content: str) -> str:
     return "\n".join(result)
 
 
+# ── AI clip selection ──────────────────────────────────────────────────────────
+
 def ai_find_clips(transcript: str, video_title: str) -> list[dict]:
     log("Asking Gemini to find best clips...", "🤖")
     try:
@@ -291,6 +346,8 @@ TRANSCRIPT:
         print(f"  Gemini error: {e}")
         return []
 
+
+# ── ffmpeg clip cutting ────────────────────────────────────────────────────────
 
 def ts_to_seconds(ts: str) -> float:
     parts = ts.strip().split(":")
@@ -354,7 +411,11 @@ def cut_clips(video_path: Path, clips: list[dict], video_title: str) -> int:
     return cut_count
 
 
+# ── Entry point ────────────────────────────────────────────────────────────────
+
 def run(channel_input: str):
+    global SESSION
+
     setup()
 
     if not GEMINI_API_KEY:
@@ -363,6 +424,8 @@ def run(channel_input: str):
     if not YOUTUBE_API_KEY:
         print("❌  YOUTUBE_API_KEY not set.")
         sys.exit(1)
+
+    SESSION = make_session()
 
     print("\n" + "="*55)
     print("  SHORTS CLIPPER  —  Auto Pipeline")
