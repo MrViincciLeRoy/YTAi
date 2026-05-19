@@ -1,0 +1,83 @@
+name: Download YouTube Video
+
+on:
+  workflow_dispatch:
+    inputs:
+      url:
+        description: "YouTube video URL"
+        required: true
+        type: string
+      quality:
+        description: "Video quality"
+        required: false
+        default: "highest"
+        type: choice
+        options:
+          - highest
+          - lowest
+          - 1080p
+          - 720p
+          - 480p
+          - 360p
+
+jobs:
+  download:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install pytubefix
+        run: pip install pytubefix
+
+      - name: Download video
+        run: |
+          python - <<'EOF'
+          import os
+          import sys
+          from pytubefix import YouTube
+          from pytubefix.cli import on_progress
+
+          url     = os.environ["VIDEO_URL"]
+          quality = os.environ["QUALITY"]
+
+          print(f"Fetching: {url}")
+          yt = YouTube(url, on_progress_callback=on_progress)
+          print(f"Title   : {yt.title}")
+          print(f"Length  : {yt.length}s")
+
+          # Pick the right stream
+          if quality == "highest":
+              stream = yt.streams.get_highest_resolution()
+          elif quality == "lowest":
+              stream = yt.streams.get_lowest_resolution()
+          else:
+              # e.g. "720p" → filter by res, fall back to highest if not found
+              res = quality
+              stream = yt.streams.filter(res=res, file_extension="mp4").first()
+              if not stream:
+                  print(f"[warn] {res} not available, falling back to highest resolution")
+                  stream = yt.streams.get_highest_resolution()
+
+          print(f"Stream  : {stream.resolution} / {stream.mime_type}")
+          print(f"Size    : {stream.filesize_mb:.1f} MB")
+
+          out_dir = "downloaded"
+          os.makedirs(out_dir, exist_ok=True)
+          path = stream.download(output_path=out_dir)
+          print(f"Saved to: {path}")
+          EOF
+        env:
+          VIDEO_URL: ${{ inputs.url }}
+          QUALITY:   ${{ inputs.quality }}
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: youtube-video
+          path: downloaded/
+          retention-days: 3   # artifacts expire after 3 days — raise if you need longer
