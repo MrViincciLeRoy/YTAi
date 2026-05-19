@@ -24,11 +24,6 @@ jobs:
         with:
           python-version: '3.12'
 
-      - name: Set up Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: '20'
-
       - name: Install system dependencies
         run: |
           sudo apt-get update -qq
@@ -37,45 +32,25 @@ jobs:
       - name: Start Tor and wait for SOCKS port
         run: |
           sudo service tor start
-          echo -n "Waiting for Tor SOCKS port"
+          echo -n "Waiting for Tor"
           for i in $(seq 1 30); do
             if python3 -c "import socket; s=socket.socket(); s.settimeout(1); s.connect(('127.0.0.1',9050)); s.close()" 2>/dev/null; then
-              echo ""
-              echo "Tor is up"
+              echo " - up"
               break
             fi
             echo -n "."
             sleep 2
             if [ "$i" -eq 30 ]; then
-              echo ""
-              echo "WARNING: Tor did not start in time ? continuing without proxy"
+              echo " - timed out, continuing without proxy"
             fi
           done
 
       - name: Install Python dependencies
-        run: pip install -U yt-dlp google-generativeai requests[socks]
-
-      - name: Write YouTube cookies
-        run: |
-          cat > cookies.txt << 'COOKIES'
-          ${{ secrets.YOUTUBE_COOKIES }}
-          COOKIES
-          echo "First line: $(head -1 cookies.txt)"
-          echo "Lines: $(wc -l < cookies.txt)"
-
-      - name: Debug available formats
-        run: |
-          yt-dlp \
-            --proxy socks5h://127.0.0.1:9050 \
-            --extractor-args "youtube:player_client=tv_embedded,web_creator,web" \
-            --cookies cookies.txt \
-            --list-formats \
-            "https://www.youtube.com/watch?v=C842vFY5kRo" 2>&1 | head -50
+        run: pip install -U requests[socks]
 
       - name: Run Shorts Clipper
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          YOUTUBE_API_KEY: ${{ secrets.YOUTUBE_API_KEY }}
         run: |
           CHANNEL="${{ github.event.inputs.channel || '@freecodecamp' }}"
           python shorts_clipper.py "$CHANNEL"
